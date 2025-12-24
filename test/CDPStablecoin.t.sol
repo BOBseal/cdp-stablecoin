@@ -89,8 +89,10 @@ contract CDPStablecoinTest is Test {
         cdp.depositCollateral(address(weth), 100 ether);
         cdp.setCollateralizationRatio(address(weth), 120);
         cdp.mint(address(weth), 80 ether);
+        // make price drop to make withdrawal unsafe
+        wethOracle.setPrice(5e17);
         vm.expectRevert();
-        cdp.withdrawCollateral(address(weth), 50 ether); // would make position unsafe
+        cdp.withdrawCollateral(address(weth), 50 ether); // would make position unsafe after price drop
         vm.stopPrank();
     }
 
@@ -101,23 +103,30 @@ contract CDPStablecoinTest is Test {
         cdp.mint(address(weth), 80 ether);
         vm.stopPrank();
 
-        // price drops: WETH from 2000 -> 1 (big drop)
-        wethOracle.setPrice(1e18); // now 1 USD
+            // bob prepares stable tokens to liquidate: deposit collateral and mint BEFORE price drop
+            vm.startPrank(bob);
+            cdp.depositCollateral(address(weth), 100 ether);
+            cdp.setCollateralizationRatio(address(weth), 200);
+            cdp.mint(address(weth), 100 ether);
+            // sanity checks
+            assertEq(cdp.balanceOf(bob), 100 ether);
+            // bob approves CDP to pull his stable tokens for liquidation
+            cdp.approve(address(cdp), type(uint256).max);
+            assertEq(cdp.allowance(bob, address(cdp)), type(uint256).max);
+            vm.stopPrank();
 
-        // bob prepares stable tokens to liquidate: deposit collateral and mint
-        vm.startPrank(bob);
-        cdp.depositCollateral(address(weth), 200 ether);
-        cdp.setCollateralizationRatio(address(weth), 200);
-        cdp.mint(address(weth), 100 ether);
-        // bob approves CDP to pull his stable tokens for liquidation
-        cdp.approve(address(cdp), type(uint256).max);
-        // liquidate alice's position
-        cdp.liquidate(alice, address(weth));
-        vm.stopPrank();
+            // price drops: WETH from 2000 -> 0.5 (big drop)
+            wethOracle.setPrice(5e17); // now 0.5 USD
 
-        // alice's position should be cleared
+            // liquidate alice's position (bob will call) - repay Alice's debt (80)
+            vm.startPrank(bob);
+            cdp.liquidate(alice, address(weth), 80 ether);
+            vm.stopPrank();
+
+        // alice's position should have had collateral swept; debt partially repaid
         (uint256 col, uint256 debt, uint256 ratio) = cdp.getPosition(alice, address(weth));
         assertEq(col, 0);
-        assertEq(debt, 0);
+        // because collateral value collapsed, liquidator could only repay ~50 and 30 remains
+        assertEq(debt, 30 ether);
     }
 }
