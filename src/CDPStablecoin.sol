@@ -1,47 +1,21 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.19;
 
-import "./ERC20.sol";
+import "../lib/openzeppelin-contracts/contracts/token/ERC20/ERC20.sol";
+import "../lib/openzeppelin-contracts/contracts/access/Ownable.sol";
+import "../lib/openzeppelin-contracts/contracts/security/ReentrancyGuard.sol";
 import "./ChainlinkInterfaces.sol";
 
-/// @notice Minimal treasury to receive swept collateral and allow owner withdrawals.
-contract Treasury {
-    address public owner;
+// Treasury is merged into the CDP contract: balances of seized fees are tracked
+// in `treasuryBalance[token]` and can be withdrawn by the CDP owner.
 
-    event Withdrawn(address token, address to, uint256 amount);
-
-    constructor(address _owner) {
-        owner = _owner;
-    }
-
-    modifier onlyOwner() {
-        require(msg.sender == owner, "Treasury: only owner");
-        _;
-    }
-
-    function withdrawERC20(address token, address to, uint256 amount) external onlyOwner {
-        require(to != address(0), "Treasury: invalid to");
-        require(amount > 0, "Treasury: amount>0");
-        ERC20(token).transfer(to, amount);
-        emit Withdrawn(token, to, amount);
-    }
-}
-
-contract CDPStablecoin is ERC20 {
+contract CDPStablecoin is OZERC20, Ownable, ReentrancyGuard {
     // Chainlink aggregator interface
 
-    uint256 public constant MIN_COLLATERAL_RATIO = 120; // percent
-    uint256 public constant LIQUIDATION_THRESHOLD = 110; // percent
+    uint256 public constant MIN_COLLATERAL_RATIO = 110; // percent
+    uint256 public constant LIQUIDATION_THRESHOLD = 100; // percent
     uint256 public constant LIQUIDATION_BONUS = 1; // percent
 
-    // reentrancy guard
-    uint8 private _locked = 1;
-    modifier nonReentrant() {
-        require(_locked == 1, "reentrant");
-        _locked = 2;
-        _;
-        _locked = 1;
-    }
 
     struct Position {
         uint256 collateralAmount; // amount of collateral token (assume 18 decimals for test tokens)
@@ -57,8 +31,8 @@ contract CDPStablecoin is ERC20 {
     // positions[user][token]
     mapping(address => mapping(address => Position)) public positions;
 
-    address public treasury;
-    address public owner;
+    // treasury balances per token (held inside this contract)
+    mapping(address => uint256) public treasuryBalance;
     bool public paused;
     mapping(address => bool) public blacklisted;
 
@@ -71,18 +45,16 @@ contract CDPStablecoin is ERC20 {
     event Burn(address indexed user, uint256 amount);
     event CollateralRatioSet(address indexed user, address indexed token, uint256 ratio);
     // Reduce indexed fields to two to lower event emission cost: index by `user` and `token`.
-    event Liquidated(address indexed user, address indexed token, uint256 repaid, uint256 collateralTaken, uint256 fee);
+    // `treasuryAmount` is the portion of seized collateral sent to the treasury.
+    event Liquidated(address indexed user, address indexed token, uint256 repaid, uint256 collateralTaken, uint256 treasuryAmount);
 
-    constructor(address[] memory tokens, address[] memory aggregators, address _treasury) ERC20("CDP Stable", "cUSD", 18) {
+    constructor(address[] memory tokens, address[] memory aggregators) OZERC20("CDP Stable", "cUSD", 18) Ownable() {
         require(tokens.length == aggregators.length, "tokens/aggregators length");
-        require(_treasury != address(0), "treasury required");
         for (uint256 i = 0; i < tokens.length; i++) {
             supportedCollateral[tokens[i]] = true;
             priceFeed[tokens[i]] = aggregators[i];
             supportedTokens.push(tokens[i]);
         }
-        treasury = _treasury;
-        owner = msg.sender;
     }
 
     modifier onlySupported(address token) {
@@ -90,10 +62,7 @@ contract CDPStablecoin is ERC20 {
         _;
     }
 
-    modifier onlyOwner() {
-        require(msg.sender == owner, "owner only");
-        _;
-    }
+    // `onlyOwner` provided by Ownable
 
     modifier notPaused() {
         require(!paused, "paused");
@@ -114,7 +83,7 @@ contract CDPStablecoin is ERC20 {
      */
     function depositCollateral(address token, uint256 amount) external nonReentrant onlySupported(token) notPaused notBlacklisted {
         require(amount > 0, "deposit: amount>0");
-        ERC20(token).transferFrom(msg.sender, address(this), amount);
+        OZERC20(token).transferFrom(msg.sender, address(this), amount);
         positions[msg.sender][token].collateralAmount += amount;
         emit Deposit(msg.sender, token, amount);
     }
@@ -137,7 +106,7 @@ contract CDPStablecoin is ERC20 {
             require(collateralValue * 100 >= p.debt * p.collateralRatio, "withdraw: under-collateralized");
         }
         p.collateralAmount = newCollateral;
-        ERC20(token).transfer(msg.sender, amount);
+        OZERC20(token).transfer(msg.sender, amount);
         emit Withdraw(msg.sender, token, amount);
     }
 
@@ -185,7 +154,7 @@ contract CDPStablecoin is ERC20 {
         // normalize price to 18 decimals
         uint256 price18 = uint256(answer) * (10 ** (18 - aggDecimals));
         // account for token decimals
-        uint8 tokenDecimals = ERC20(token).decimals();
+        uint8 tokenDecimals = OZERC20(token).decimals();
         // collateral value in USD with 18 decimals = amount * price18 / (10 ** tokenDecimals)
         return (amount * price18) / (10 ** tokenDecimals);
     }
@@ -269,7 +238,7 @@ contract CDPStablecoin is ERC20 {
         // compute adjusted values via helper to reduce local variables and avoid stack-too-deep
         (uint256 adjustedRepay, uint256 collateralToLiquidator, uint256 fee) = _computeLiquidationInfo(token, repayAmount, p.collateralAmount);
 
-        require(allowance[msg.sender][address(this)] >= adjustedRepay, "liquidate: allowance insufficient");
+        require(allowance(msg.sender, address(this)) >= adjustedRepay, "liquidate: allowance insufficient");
         // pull stable tokens and burn only the adjusted repay
         this.transferFrom(msg.sender, address(this), adjustedRepay);
         _burn(address(this), adjustedRepay);
@@ -281,8 +250,11 @@ contract CDPStablecoin is ERC20 {
         p.collateralAmount -= collateralToLiquidator;
         p.debt = adjustedRepay >= p.debt ? 0 : p.debt - adjustedRepay;
 
-        if (toLiquidatorNet > 0) ERC20(token).transfer(msg.sender, toLiquidatorNet);
-        if (fee > 0) ERC20(token).transfer(treasury, fee);
+        if (toLiquidatorNet > 0) OZERC20(token).transfer(msg.sender, toLiquidatorNet);
+        if (fee > 0) {
+            // keep fee inside this contract and mark it as treasury-held
+            treasuryBalance[token] += fee;
+        }
 
         // emit concise event (indexed: user, token) to reduce emission cost
         emit Liquidated(user, token, adjustedRepay, collateralToLiquidator, fee);
@@ -293,7 +265,7 @@ contract CDPStablecoin is ERC20 {
         address agg = priceFeed[token];
         (, int256 answer,, ,) = AggregatorV3Interface(agg).latestRoundData();
         uint256 price18 = uint256(answer) * (10 ** (18 - AggregatorV3Interface(agg).decimals()));
-        uint256 tokenScale = (10 ** uint256(ERC20(token).decimals()));
+        uint256 tokenScale = (10 ** uint256(OZERC20(token).decimals()));
         uint256 collateralNeeded = (repayAmount * tokenScale) / price18;
         uint256 collToLiquidator = collateralNeeded + ((collateralNeeded * LIQUIDATION_BONUS) / 100);
 
@@ -315,6 +287,46 @@ contract CDPStablecoin is ERC20 {
         uint256 sum = 0;
         for (uint256 i = 0; i < tokens.length; i++) sum += positions[user][tokens[i]].debt;
         return sum;
+    }
+
+    // owner may withdraw treasury-held collateral tokens from the CDP contract
+    function withdrawTreasury(address token, address to, uint256 amount) external onlyOwner {
+        require(to != address(0), "treasury: invalid to");
+        require(amount > 0, "treasury: amount>0");
+        require(treasuryBalance[token] >= amount, "treasury: insufficient balance");
+        treasuryBalance[token] -= amount;
+        OZERC20(token).transfer(to, amount);
+    }
+
+    // emergency admin function: withdraw tokens that are free (not reserved as treasury)
+    function emergencyWithdraw(address token, address to, uint256 amount) external onlyOwner {
+        require(to != address(0), "emergency: invalid to");
+        require(amount > 0, "emergency: amount>0");
+        uint256 held = OZERC20(token).balanceOf(address(this));
+        uint256 reserved = treasuryBalance[token];
+        require(held >= reserved, "emergency: reserved>held");
+        uint256 available = held - reserved;
+        require(amount <= available, "emergency: amount>available");
+        OZERC20(token).transfer(to, amount);
+    }
+
+    /**
+     * @notice Estimate the liquidation oracle price (normalized to 18 decimals) at which
+     *         the `user`'s position for `token` would hit the `LIQUIDATION_THRESHOLD`.
+     * @dev Returns 0 when position has no collateral or no debt.
+     * @param user The user address.
+     * @param token The collateral token address.
+     */
+    function estimatedLiquidationPrice(address user, address token) external view returns (uint256 price18) {
+        Position storage p = positions[user][token];
+        if (p.debt == 0 || p.collateralAmount == 0) return 0;
+        // collateralValue required at liquidation: debt * LIQUIDATION_THRESHOLD / 100
+        // price18 = collateralValue * 10^tokenDecimals / collateralAmount
+        uint8 tokenDecimals = OZERC20(token).decimals();
+        uint256 collateralValueRequired = (p.debt * LIQUIDATION_THRESHOLD) / 100;
+        // price18 = collateralValueRequired * (10 ** tokenDecimals) / collateralAmount
+        price18 = (collateralValueRequired * (10 ** uint256(tokenDecimals))) / p.collateralAmount;
+        return price18;
     }
 
     // helper: small list of supported tokens (not gas efficient, used for tests/example only)

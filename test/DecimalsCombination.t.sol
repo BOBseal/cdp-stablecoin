@@ -36,8 +36,7 @@ contract DecimalsCombinationTest is Test {
         aggs[1] = address(oracle6);
         aggs[2] = address(oracle18);
 
-        Treasury treasury = new Treasury(address(this));
-        cdp = new CDPStablecoin(tokens, aggs, address(treasury));
+        cdp = new CDPStablecoin(tokens, aggs);
 
         // mint tokens to alice: 1 WBTC8 (1e8), 1000 T6 (1e3 * 1e6), 10 WETH (10e18)
         token8.mint(alice, 1 * 10**8);

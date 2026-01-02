@@ -19,8 +19,7 @@ contract CollateralDecimalsTest is Test {
         address[] memory aggs = new address[](1);
         tokens[0] = address(token8);
         aggs[0] = address(oracle);
-        Treasury treasury = new Treasury(address(this));
-        cdp = new CDPStablecoin(tokens, aggs, address(treasury));
+        cdp = new CDPStablecoin(tokens, aggs);
 
         // mint 1 WBTC (8 decimals => 1 * 10^8)
         token8.mint(alice, 1 * 10**8);

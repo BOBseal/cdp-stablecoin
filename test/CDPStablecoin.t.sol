@@ -37,10 +37,7 @@ contract CDPStablecoinTest is Test {
         aggs[1] = address(wethOracle);
         aggs[2] = address(wsolOracle);
 
-        // deploy a simple treasury owned by test contract
-        Treasury treasury = new Treasury(address(this));
-
-        cdp = new CDPStablecoin(tokens, aggs, address(treasury));
+        cdp = new CDPStablecoin(tokens, aggs);
 
         // mint collateral for users
         wbtc.mint(alice, 10 ether); // 10 WBTC

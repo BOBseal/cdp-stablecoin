@@ -20,8 +20,7 @@ contract FuzzLiquidation is Test {
         address[] memory aggs = new address[](1);
         tokens[0] = address(weth);
         aggs[0] = address(wethOracle);
-        Treasury treasury = new Treasury(address(this));
-        cdp = new CDPStablecoin(tokens, aggs, address(treasury));
+        cdp = new CDPStablecoin(tokens, aggs);
 
         // mint collateral for users
         weth.mint(alice, 100 ether);
