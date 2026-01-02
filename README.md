@@ -80,8 +80,3 @@ Security & audit notes
 	- More sophisticated liquidation mechanics (partial liquidations, auction, incentives tuning).
 	- Safe math beyond Solidity's built-ins where precision matters, and careful edge-case testing for rounding.
 	- A governance model and timelocks for sensitive admin operations.
-
-If you'd like, I can:
-- Implement a variant where the treasury receives most seized collateral and liquidators only get the 1% bonus.
-- Add an explicit test asserting `treasuryBalance` accrues correctly across liquidation sequences.
-- Update `docs/liquidation.md` and add usage examples for the `estimatedLiquidationPrice` helper.
