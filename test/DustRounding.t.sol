@@ -39,7 +39,7 @@ contract DustRoundingTest is Test {
     function testFullRepayClearsDebt() public {
         vm.startPrank(alice);
         cdp.depositCollateral(address(weth), 1 ether);
-        cdp.setCollateralizationRatio(address(weth), 110);
+        cdp.setCollateralizationRatio(address(weth), 120);
         // mint a small amount to keep repayable amount achievable after a price drop
         uint256 mintAmt = 10 ether;
         cdp.mint(address(weth), mintAmt);
@@ -50,7 +50,7 @@ contract DustRoundingTest is Test {
         vm.startPrank(bob);
         cdp.depositCollateral(address(weth), 1 ether);
         cdp.setCollateralizationRatio(address(weth), 200);
-        cdp.mint(address(weth), mintAmt + 10);
+        cdp.mint(address(weth), mintAmt + 20);
         cdp.approve(address(cdp), type(uint256).max);
         vm.stopPrank();
 

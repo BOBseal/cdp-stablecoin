@@ -12,8 +12,8 @@ import "./ChainlinkInterfaces.sol";
 contract CDPStablecoin is OZERC20, Ownable, ReentrancyGuard {
     // Chainlink aggregator interface
 
-    uint256 public constant MIN_COLLATERAL_RATIO = 110; // percent
-    uint256 public constant LIQUIDATION_THRESHOLD = 100; // percent
+    uint256 public constant MIN_COLLATERAL_RATIO = 120; // percent
+    uint256 public constant LIQUIDATION_THRESHOLD = 110; // percent
     uint256 public constant LIQUIDATION_BONUS = 1; // percent
 
 
